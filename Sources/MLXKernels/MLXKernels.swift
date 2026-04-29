@@ -1,35 +1,32 @@
 // MLXKernels.swift — Apple MLX kernel implementations for goleta-infer.
 //
-// Phase 1 stub status (2026-04-29): this module compiles but registers
-// no kernels. The C-side ggml-mlx backend (in the LlamaCore xcframework)
-// receives a NULL kernel table and stays in stub mode. Phase 2 fills in
-// the actual @_cdecl bridges.
+// Phase 2 status (2026-04-30): the kernel table starts taking shape.
+// Each task lights up one slot:
+//
+//   Task 2.1a: DenseMatmul.swift  -> table.dense_matmul_f16   ✅ DONE
+//   Task 2.2:  Q4KMDequant.swift  -> table.dequant_q4km_to_f16
+//   Task 2.3:  RMSNorm.swift      -> table.rms_norm
+//   Task 2.4:  RoPE.swift         -> table.rope
+//   Task 2.5:  SDPA.swift         -> table.sdpa
+//   Task 2.6:  KVCache.swift      -> table.kv_cache_*
 //
 // Architecture:
 //
-//   MLXKernels.swift (this file)
+//   MLXKernels.swift (this file) — bootstrap() builds the table
 //     │
-//     │  goleta_mlx_register_kernels(&table)
+//     │  goleta_mlx_register_kernels(&table)   (C copies into static storage)
 //     ▼
 //   ggml-mlx.cpp (in LlamaCore.xcframework)
 //     │
 //     │  std::atomic<table*> g_mlx_kernels.store(...)
 //     ▼
-//   ggml graph compute dispatcher
+//   ggml graph_compute dispatcher (Task 2.1b)
 //     - reads g_mlx_kernels at op time
 //     - calls table->dense_matmul_f16(...) etc. via C function pointer
-//     - on NULL: falls through to ggml-cpu / ggml-metal
+//     - on NULL or NULL fn-ptr: falls through to ggml-cpu / ggml-metal
 //
-// Phase 2 task plan (one Swift file per task, all in this directory):
-//   Task 2.1: DenseMatmul.swift     -> table.dense_matmul_f16
-//   Task 2.2: Q4KMDequant.swift     -> table.dequant_q4km_to_f16
-//   Task 2.3: RMSNorm.swift         -> table.rms_norm
-//   Task 2.4: RoPE.swift            -> table.rope
-//   Task 2.5: SDPA.swift            -> table.sdpa
-//   Task 2.6: KVCache.swift         -> table.kv_cache_create/append/read/destroy
-//
-// At Phase 2 completion, MLXKernels.bootstrap() builds the table from
-// the @_cdecl symbols and calls goleta_mlx_register_kernels(&table).
+// MLX evaluates lazily — bootstrap() is therefore cheap. The actual
+// MLX device init happens on the first kernel call.
 
 import Foundation
 // The xcframework's modulemap calls itself `llama` (not LlamaCore — that's
@@ -38,17 +35,28 @@ import Foundation
 import llama
 
 public enum MLXKernels {
+
     /// Register the MLX kernel table with the C-side ggml-mlx backend.
     ///
-    /// Phase 1: passes NULL, leaves backend in stub mode.
-    /// Phase 2: builds a `goleta_mlx_kernel_table` populated with @_cdecl
-    /// function pointers and registers it.
+    /// Idempotent — safe to call multiple times; the C side serializes on
+    /// a mutex and copies the table into static storage so the local struct
+    /// here doesn't need to outlive the call.
     ///
-    /// Idempotent — safe to call multiple times. Returns true if the C
-    /// side accepted the registration (or the deregistration request).
+    /// Returns true if the C side accepted the registration. False indicates
+    /// either an ABI mismatch (recompile MLXKernels against a fresh ggml-mlx.h)
+    /// or a deeper integration bug.
     @discardableResult
     public static func bootstrap() -> Bool {
-        // Phase 1: no kernels yet. Explicit NULL deregisters / keeps stub.
+        var table = makeKernelTable()
+        return withUnsafePointer(to: &table) { ptr in
+            goleta_mlx_register_kernels(ptr)
+        }
+    }
+
+    /// Tear down: unregister kernels, return backend to stub mode. Used by
+    /// tests to isolate state and during app shutdown for cleanliness.
+    @discardableResult
+    public static func shutdown() -> Bool {
         return goleta_mlx_register_kernels(nil)
     }
 
@@ -56,5 +64,25 @@ public enum MLXKernels {
     /// Use this to verify bootstrap() ran in tests.
     public static var kernelsAvailable: Bool {
         return goleta_mlx_kernels_available()
+    }
+
+    // MARK: - Internal: table construction
+
+    /// Build the kernel table from the @_cdecl symbols defined in this
+    /// module. Phase 2 tasks add slots; nil entries mean "kernel not
+    /// implemented yet — ggml-mlx falls through to ggml-cpu for that op."
+    private static func makeKernelTable() -> goleta_mlx_kernel_table {
+        var table = goleta_mlx_kernel_table()
+        table.abi_version = Int32(GOLETA_MLX_KERNEL_ABI_VERSION)
+
+        // Task 2.1a: dense fp16 matmul. The bridge is a @convention(c) closure
+        // constant (NOT @_cdecl) — see DenseMatmul.swift for why.
+        table.dense_matmul_f16 = _denseMatmulF16Bridge
+
+        // Phase 2 remaining slots default-initialize to nil. As tasks 2.2-2.6
+        // land, they add their @_cdecl symbol here. ggml-mlx checks for NULL
+        // per-op before dispatching; absent kernels fall through to ggml-cpu.
+
+        return table
     }
 }

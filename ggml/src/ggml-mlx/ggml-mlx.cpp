@@ -28,18 +28,40 @@
 
 #include <atomic>
 #include <cstring>
+#include <mutex>
 
 // ---------------------------------------------------------------------------
 // Kernel registration (called from MLXKernels.swift at module-load time)
 // ---------------------------------------------------------------------------
+//
+// Concurrency model:
+//   - Registration is rare (typically once at app startup) and serializes
+//     through g_mlx_register_mutex while it copies the caller's table into
+//     static storage. This keeps the read path lock-free.
+//   - Reads are hot (every ggml graph_compute checks if MLX is available)
+//     and use a single std::atomic<const goleta_mlx_kernel_table *>.load()
+//     against g_mlx_table_storage's address.
+//   - Storing into static storage frees the caller of lifetime concerns —
+//     Swift can pass a stack-allocated struct from bootstrap() and it's
+//     safe even after bootstrap returns.
 
 namespace {
-    // Global, atomically swapped. nullptr = no Swift kernels registered yet,
-    // backend stays in Phase 1 stub mode (0 devices).
+    // Static storage for the registered table. Copied at registration time;
+    // pointer to this storage lives forever. Either zero-initialized (stub
+    // mode) or holds the most recently registered Swift kernel table.
+    goleta_mlx_kernel_table g_mlx_table_storage{};
+
+    // Atomic pointer: NULL = stub mode, non-NULL = active. Always points
+    // either at &g_mlx_table_storage or nullptr; never at caller storage.
     std::atomic<const goleta_mlx_kernel_table *> g_mlx_kernels{nullptr};
+
+    // Serializes registration writes (very cold path).
+    std::mutex g_mlx_register_mutex;
 }
 
 extern "C" bool goleta_mlx_register_kernels(const goleta_mlx_kernel_table * table) {
+    std::lock_guard<std::mutex> lock(g_mlx_register_mutex);
+
     if (table == nullptr) {
         // Deregister: used by tests + during teardown to force stub mode.
         g_mlx_kernels.store(nullptr, std::memory_order_release);
@@ -53,7 +75,10 @@ extern "C" bool goleta_mlx_register_kernels(const goleta_mlx_kernel_table * tabl
         return false;
     }
 
-    g_mlx_kernels.store(table, std::memory_order_release);
+    // Copy into static storage so caller's storage doesn't have to outlive
+    // the registration. Swift bootstrap() is now safe to pass &localTable.
+    g_mlx_table_storage = *table;
+    g_mlx_kernels.store(&g_mlx_table_storage, std::memory_order_release);
     GGML_LOG_INFO("ggml-mlx: kernels registered (ABI v%d)\n", table->abi_version);
     return true;
 }
