@@ -14,13 +14,25 @@ existing OpenAI-compat HTTP).
 
 ## Run
 
+**Important: `swift run` does not work.** SwiftPM CLI cannot compile
+Metal shaders, so the resulting binary segfaults at runtime with
+"Failed to load default metallib". Per mlx-swift's own README this
+is by design — use `xcodebuild`:
+
 ```bash
 cd mlx-spike
-swift run -c release MLXSpike
+# Xcode 26+ also needs the Metal Toolchain component:
+#   xcodebuild -downloadComponent MetalToolchain   # ~688 MB, one-time
+xcodebuild -scheme MLXSpike -configuration Release \
+    -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath ./.xcbuild build
+./.xcbuild/Build/Products/Release/MLXSpike
 ```
 
-First run pulls `mlx-swift` (~150MB on first build), warms shader
-caches, then prints a markdown-friendly comparison table:
+The xcodebuild path produces `mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib`
+next to the executable, which MLX needs at runtime. First run pulls
+`mlx-swift` (~150MB), compiles ~30 .metal kernels, then prints a
+markdown-friendly comparison table:
 
 ```
 shape                  | Accelerate   | MLX          | speedup    | verdict
