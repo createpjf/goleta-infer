@@ -13,10 +13,17 @@ let exclude: [String] = []
 let resources: [Resource] = [
     .process("ggml-metal.metal")
 ]
-let additionalSources: [String] = ["ggml-metal.m"]
+// goleta-infer Phase 0: ggml-mlx.c ships as a stub on Apple
+// Silicon alongside ggml-metal.m. Both backends compile in;
+// runtime backend dispatcher picks whichever returns success.
+// Phase 0 stub always returns false → falls through to ggml-metal.
+// Phase 1 (W25-W28) replaces the stub bodies with real kernels
+// that call out to MLXKernels.swift via @_cdecl.
+let additionalSources: [String] = ["ggml-metal.m", "ggml-mlx.c"]
 let additionalSettings: [CSetting] = [
     .unsafeFlags(["-fno-objc-arc"]),
-    .define("GGML_USE_METAL")
+    .define("GGML_USE_METAL"),
+    .define("GGML_USE_MLX"),
 ]
 #else
 let platforms: [SupportedPlatform]? = nil
