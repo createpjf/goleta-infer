@@ -7,3 +7,7 @@ ggml-common.h
 !peg-parser
 # goleta-infer: manual smoke tests (model load + decode verification)
 !manual/
+# goleta-infer: SwiftPM Tests/ target sources. macOS APFS is case-insensitive
+# so SwiftPM's Tests/MLXKernelsTests/ resolves to the same directory as
+# upstream's lowercase tests/, hence this exception is needed here too.
+!MLXKernelsTests/
