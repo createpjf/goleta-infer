@@ -75,9 +75,14 @@ public enum MLXKernels {
         var table = goleta_mlx_kernel_table()
         table.abi_version = Int32(GOLETA_MLX_KERNEL_ABI_VERSION)
 
-        // Task 2.1a: dense fp16 matmul. The bridge is a @convention(c) closure
-        // constant (NOT @_cdecl) — see DenseMatmul.swift for why.
+        // Task 2.1a: dense fp16 matmul (generic primitive: out = a @ b).
+        // The bridge is a @convention(c) closure constant (NOT @_cdecl) —
+        // see DenseMatmul.swift for why.
         table.dense_matmul_f16 = _denseMatmulF16Bridge
+
+        // Task 2.1b: ggml-shaped MUL_MAT (out = input @ weight.T), what
+        // ggml-mlx.cpp's graph_compute actually dispatches to.
+        table.mul_mat_f16_ggml = _mulMatF16GgmlBridge
 
         // Phase 2 remaining slots default-initialize to nil. As tasks 2.2-2.6
         // land, they add their @_cdecl symbol here. ggml-mlx checks for NULL

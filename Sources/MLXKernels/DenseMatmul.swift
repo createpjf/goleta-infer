@@ -74,3 +74,49 @@ internal let _denseMatmulF16Bridge: @convention(c) (
 
     return true
 }
+
+// MARK: - ggml-shaped MUL_MAT bridge (Phase 2 Task 2.1b)
+
+/// Implementation of the `mul_mat_f16_ggml` slot in `goleta_mlx_kernel_table`.
+///
+/// Computes `out[m, n] = sum_k input[m, k] * weight[n, k]`, i.e.
+/// `out = input @ weight.T`. This is the layout ggml MUL_MAT operates on
+/// natively: the C-side dispatcher in ggml-mlx.cpp passes src1 as input
+/// (row-major [M, K]) and src0 as weight (row-major [N, K]) directly,
+/// without any caller-side transpose.
+///
+/// The transpose happens inside MLX as a stride-only view (no memcpy),
+/// then a single `MLX.matmul(input, weight.transposed())` runs on the GPU.
+internal let _mulMatF16GgmlBridge: @convention(c) (
+    UnsafeRawPointer?, Int32, Int32,        // input, M, K
+    UnsafeRawPointer?, Int32, Int32,        // weight, N, K_w (must == K)
+    UnsafeMutableRawPointer?
+) -> Bool = { inputData, mIn, kIn, weightData, nIn, kwIn, outData in
+    guard let inputData, let weightData, let outData,
+          kIn == kwIn,
+          mIn > 0, kIn > 0, nIn > 0 else { return false }
+
+    let m = Int(mIn), k = Int(kIn), n = Int(nIn)
+
+    let inputPtr  = inputData.assumingMemoryBound(to: Float16.self)
+    let weightPtr = weightData.assumingMemoryBound(to: Float16.self)
+    let outPtr    = outData.assumingMemoryBound(to: Float16.self)
+
+    let inputBuf  = UnsafeBufferPointer(start: inputPtr,  count: m * k)
+    let weightBuf = UnsafeBufferPointer(start: weightPtr, count: n * k)
+
+    // input: [M, K] row-major = MLXArray with shape [m, k]
+    // weight: ggml stores it as [N, K] row-major = MLXArray with shape [n, k]
+    // For matmul we need weight as [K, N]; transposed() is a stride view.
+    let inputArr  = MLXArray(inputBuf,  [m, k])
+    let weightArr = MLXArray(weightBuf, [n, k])
+    let cArr = matmul(inputArr, weightArr.transposed())
+    eval(cArr)
+
+    cArr.asArray(Float16.self).withUnsafeBufferPointer { src in
+        guard let srcBase = src.baseAddress else { return }
+        memcpy(outPtr, srcBase, m * n * MemoryLayout<Float16>.size)
+    }
+
+    return true
+}

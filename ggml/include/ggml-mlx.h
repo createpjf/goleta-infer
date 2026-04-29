@@ -57,9 +57,25 @@ struct goleta_mlx_kernel_table {
     // one entry. NULL means "kernel not implemented; ggml-mlx falls through
     // to ggml-cpu for ops that need it."
 
-    // Task 2.1: dense fp16 matmul
+    // Task 2.1a: generic dense fp16 matmul. out = a @ b where a is [a_rows,
+    // a_cols] and b is [b_rows, b_cols] in row-major layout (a_cols == b_rows).
+    // Useful as a primitive but NOT what ggml MUL_MAT expects directly —
+    // see mul_mat_f16_ggml below for the ggml-shaped variant.
     bool (*dense_matmul_f16)(const void * a, int a_rows, int a_cols,
                              const void * b, int b_rows, int b_cols,
+                             void * out);
+
+    // Task 2.1b: ggml MUL_MAT-shaped fp16 matmul. Computes
+    //   out[m, n] = sum_k input[m, k] * weight[n, k]
+    // i.e. out = input @ weight.T. This matches ggml's MUL_MAT semantics
+    // exactly: src1 (input) is row-major [M, K] (ne11=M, ne10=K) and src0
+    // (weight) is row-major [N, K] (ne01=N, ne00=K) — both in their natural
+    // ggml layout, no caller-side transpose needed.
+    //
+    // Internally the Swift implementation does weight.transposed() (a
+    // stride-only view in MLX, not a memcpy) and then a single matmul.
+    bool (*mul_mat_f16_ggml)(const void * input, int m, int k,
+                             const void * weight, int n, int k_w,
                              void * out);
 
     // Task 2.2: Q4_K_M -> fp16 dequantization
@@ -93,7 +109,9 @@ struct goleta_mlx_kernel_table {
 };
 
 // Bump this whenever the kernel_table struct layout changes.
-#define GOLETA_MLX_KERNEL_ABI_VERSION 1
+//   v1 (Phase 1):   stub — registration handshake only, all slots NULL
+//   v2 (Phase 2.1b): adds mul_mat_f16_ggml slot for ggml-shaped MUL_MAT
+#define GOLETA_MLX_KERNEL_ABI_VERSION 2
 
 // Called by MLXKernels.swift at module-load time. Pass NULL to deregister.
 // Returns true if the table was accepted (abi_version matches).

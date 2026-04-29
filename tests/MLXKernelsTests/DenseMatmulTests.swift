@@ -75,6 +75,78 @@ final class DenseMatmulTests: XCTestCase {
         XCTAssertFalse(ok)
     }
 
+    // MARK: - Layer 3: ggml-shaped bridge (Task 2.1b)
+
+    /// Verify the ggml-style bridge agrees with the generic primitive.
+    /// For ggml MUL_MAT semantics: out = input @ weight.T where input is
+    /// row-major [M, K] and weight is row-major [N, K]. With all-ones
+    /// inputs, out[i,j] = sum_k 1*1 = K, regardless of layout.
+    func test_mul_mat_ggml_bridge_all_ones() {
+        let m = 4, k = 8, n = 6
+        let inputBuf  = [Float16](repeating: 1.0, count: m * k)
+        let weightBuf = [Float16](repeating: 1.0, count: n * k)
+        var outBuf    = [Float16](repeating: 0.0, count: m * n)
+
+        let ok = inputBuf.withUnsafeBufferPointer { iPtr -> Bool in
+            weightBuf.withUnsafeBufferPointer { wPtr in
+                outBuf.withUnsafeMutableBufferPointer { oPtr in
+                    _mulMatF16GgmlBridge(
+                        UnsafeRawPointer(iPtr.baseAddress),
+                        Int32(m), Int32(k),
+                        UnsafeRawPointer(wPtr.baseAddress),
+                        Int32(n), Int32(k),
+                        UnsafeMutableRawPointer(oPtr.baseAddress)
+                    )
+                }
+            }
+        }
+        XCTAssertTrue(ok)
+        for v in outBuf {
+            XCTAssertEqual(Float(v), Float(k), accuracy: 1e-3)
+        }
+    }
+
+    /// Numerical equivalence: ggml-shaped bridge must equal the explicit
+    /// formula `out[m, n] = sum_k input[m, k] * weight[n, k]` to within
+    /// fp16 rounding tolerance.
+    func test_mul_mat_ggml_bridge_numerical_equivalence() {
+        let m = 3, k = 5, n = 4
+        // Distinct values so a transposition bug would visibly fail.
+        var inputBuf  = [Float16]()
+        var weightBuf = [Float16]()
+        for i in 0..<(m*k) { inputBuf.append(Float16(Float(i) * 0.1)) }
+        for i in 0..<(n*k) { weightBuf.append(Float16(Float(i) * 0.07 + 0.3)) }
+        var outBuf = [Float16](repeating: 0.0, count: m * n)
+
+        let ok = inputBuf.withUnsafeBufferPointer { iPtr -> Bool in
+            weightBuf.withUnsafeBufferPointer { wPtr in
+                outBuf.withUnsafeMutableBufferPointer { oPtr in
+                    _mulMatF16GgmlBridge(
+                        UnsafeRawPointer(iPtr.baseAddress),
+                        Int32(m), Int32(k),
+                        UnsafeRawPointer(wPtr.baseAddress),
+                        Int32(n), Int32(k),
+                        UnsafeMutableRawPointer(oPtr.baseAddress)
+                    )
+                }
+            }
+        }
+        XCTAssertTrue(ok)
+
+        // Reference: explicit ggml MUL_MAT formula.
+        for mi in 0..<m {
+            for ni in 0..<n {
+                var expected: Float = 0
+                for ki in 0..<k {
+                    expected += Float(inputBuf[mi * k + ki]) * Float(weightBuf[ni * k + ki])
+                }
+                let got = Float(outBuf[mi * n + ni])
+                XCTAssertEqual(got, expected, accuracy: 1e-2,
+                               "out[\(mi),\(ni)] = \(got), expected \(expected)")
+            }
+        }
+    }
+
     /// Shape mismatch should fail. a's cols (k) must equal b's rows.
     func test_cdecl_bridge_rejects_shape_mismatch() {
         let aBuf = [Float16](repeating: 1.0, count: 16)  // 4×4
