@@ -35,6 +35,74 @@ GGML_BACKEND_API bool ggml_backend_is_mlx(ggml_backend_t backend);
 // builds, even when no MLX device is available at runtime.
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_mlx_reg(void);
 
+// ---------------------------------------------------------------------------
+// MLX kernel registration interface (Phase 2)
+//
+// This decouples the C-side ggml-mlx backend (compiled into the xcframework)
+// from the Swift-side MLXKernels module (compiled separately). At Swift module
+// load time, MLXKernels calls goleta_mlx_register_kernels() with a table of
+// function pointers. ggml_backend_mlx_init() then upgrades from "Phase 1 stub
+// — 0 devices" to "real backend with kernels" if registration has happened.
+//
+// If MLXKernels is never loaded (e.g., consumer only links the C xcframework),
+// the backend stays in Phase 1 stub mode and ops fall through to ggml-cpu /
+// ggml-metal. This is intentional: Goleta can opt into MLX by linking
+// MLXKernels, and other consumers of goleta-infer can stay C-only.
+// ---------------------------------------------------------------------------
+
+struct goleta_mlx_kernel_table {
+    int abi_version;  // must equal GOLETA_MLX_KERNEL_ABI_VERSION below
+
+    // Phase 2 fills in these function pointers. Each Phase 2 task lights up
+    // one entry. NULL means "kernel not implemented; ggml-mlx falls through
+    // to ggml-cpu for ops that need it."
+
+    // Task 2.1: dense fp16 matmul
+    bool (*dense_matmul_f16)(const void * a, int a_rows, int a_cols,
+                             const void * b, int b_rows, int b_cols,
+                             void * out);
+
+    // Task 2.2: Q4_K_M -> fp16 dequantization
+    bool (*dequant_q4km_to_f16)(const void * q4km_blocks,
+                                int block_count,
+                                void * out_f16);
+
+    // Task 2.3: RMSNorm
+    bool (*rms_norm)(const void * input, const void * weight,
+                     int n_elements, int n_features,
+                     float eps, void * out);
+
+    // Task 2.4: Rotary positional embedding
+    bool (*rope)(const void * input, int n_tokens, int n_dims,
+                 int head_dim, int n_past, float theta,
+                 void * out);
+
+    // Task 2.5: Scaled dot-product attention (uses MLXFast)
+    bool (*sdpa)(const void * q, const void * k, const void * v,
+                 int n_heads, int n_kv_heads, int head_dim, int seq_len,
+                 void * out);
+
+    // Task 2.6: KV cache append/read; opaque cache handle
+    void * (*kv_cache_create)(int n_layers, int n_heads, int head_dim,
+                              int max_seq_len);
+    bool (*kv_cache_append)(void * cache, int layer, int position,
+                            const void * k, const void * v);
+    bool (*kv_cache_read)(void * cache, int layer, int up_to_position,
+                          void * out_k, void * out_v);
+    void (*kv_cache_destroy)(void * cache);
+};
+
+// Bump this whenever the kernel_table struct layout changes.
+#define GOLETA_MLX_KERNEL_ABI_VERSION 1
+
+// Called by MLXKernels.swift at module-load time. Pass NULL to deregister.
+// Returns true if the table was accepted (abi_version matches).
+GGML_BACKEND_API bool goleta_mlx_register_kernels(const struct goleta_mlx_kernel_table * table);
+
+// Returns true iff at least one kernel is registered. Used by
+// ggml_backend_mlx_init() to decide stub vs real.
+GGML_BACKEND_API bool goleta_mlx_kernels_available(void);
+
 #ifdef __cplusplus
 }
 #endif

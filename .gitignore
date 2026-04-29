@@ -162,3 +162,15 @@ AGENTS.local.md
 mlx-spike/.build/
 mlx-spike/.xcbuild/
 mlx-spike/Package.resolved
+
+# goleta-infer SwiftPM + xcframework build artifacts
+/.build/
+/Package.resolved
+/build-apple/
+/build-macos/
+/build-ios-sim/
+/build-ios-device/
+/build-visionos/
+/build-visionos-sim/
+/build-tvos-sim/
+/build-tvos-device/

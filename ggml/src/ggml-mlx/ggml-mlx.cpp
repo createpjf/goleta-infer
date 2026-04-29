@@ -26,7 +26,41 @@
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
 
+#include <atomic>
 #include <cstring>
+
+// ---------------------------------------------------------------------------
+// Kernel registration (called from MLXKernels.swift at module-load time)
+// ---------------------------------------------------------------------------
+
+namespace {
+    // Global, atomically swapped. nullptr = no Swift kernels registered yet,
+    // backend stays in Phase 1 stub mode (0 devices).
+    std::atomic<const goleta_mlx_kernel_table *> g_mlx_kernels{nullptr};
+}
+
+extern "C" bool goleta_mlx_register_kernels(const goleta_mlx_kernel_table * table) {
+    if (table == nullptr) {
+        // Deregister: used by tests + during teardown to force stub mode.
+        g_mlx_kernels.store(nullptr, std::memory_order_release);
+        GGML_LOG_INFO("ggml-mlx: kernels deregistered\n");
+        return true;
+    }
+
+    if (table->abi_version != GOLETA_MLX_KERNEL_ABI_VERSION) {
+        GGML_LOG_ERROR("ggml-mlx: kernel ABI mismatch (got %d, expected %d) — refusing registration\n",
+                       table->abi_version, GOLETA_MLX_KERNEL_ABI_VERSION);
+        return false;
+    }
+
+    g_mlx_kernels.store(table, std::memory_order_release);
+    GGML_LOG_INFO("ggml-mlx: kernels registered (ABI v%d)\n", table->abi_version);
+    return true;
+}
+
+extern "C" bool goleta_mlx_kernels_available(void) {
+    return g_mlx_kernels.load(std::memory_order_acquire) != nullptr;
+}
 
 // ---------------------------------------------------------------------------
 // Backend registry interface (mandatory entry points)

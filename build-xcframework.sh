@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 #
+# goleta-infer xcframework build (forked from upstream llama.cpp).
+#
+# Goleta-specific edits (vs upstream):
+#   - GGML_MLX=ON added so the ggml-mlx Phase 1 stub backend ships
+#     in the xcframework.
+#   - MACOS_ONLY=1 env var skips iOS/visionOS/tvOS for ~10x faster
+#     dev iteration (~3 min vs ~30 min). Default OFF; full
+#     multi-platform build still works untouched.
+#   - Final xcframework renamed to goleta-infer.xcframework.
+#
 # Options
 IOS_MIN_OS_VERSION=16.4
-MACOS_MIN_OS_VERSION=13.3
+MACOS_MIN_OS_VERSION=14.0   # bumped from 13.3 to satisfy mlx-swift requirement
 VISIONOS_MIN_OS_VERSION=1.0
 TVOS_MIN_OS_VERSION=16.4
+
+# goleta-infer: macOS-only fast path for dev iteration.
+MACOS_ONLY="${MACOS_ONLY:-0}"
 
 BUILD_SHARED_LIBS=OFF
 LLAMA_BUILD_EXAMPLES=OFF
@@ -16,6 +29,8 @@ GGML_METAL_EMBED_LIBRARY=ON
 GGML_BLAS_DEFAULT=ON
 GGML_METAL_USE_BF16=ON
 GGML_OPENMP=OFF
+# goleta-infer: ship the Phase 1 ggml-mlx stub backend in the xcframework.
+GGML_MLX=ON
 
 COMMON_C_FLAGS="-Wno-macro-redefined -Wno-shorten-64-to-32 -Wno-unused-command-line-argument -g"
 COMMON_CXX_FLAGS="-Wno-macro-redefined -Wno-shorten-64-to-32 -Wno-unused-command-line-argument -g"
@@ -41,6 +56,7 @@ COMMON_CMAKE_ARGS=(
     -DGGML_METAL_USE_BF16=${GGML_METAL_USE_BF16}
     -DGGML_NATIVE=OFF
     -DGGML_OPENMP=${GGML_OPENMP}
+    -DGGML_MLX=${GGML_MLX}
 )
 
 check_required_tool() {
@@ -122,6 +138,9 @@ setup_framework_structure() {
     cp ggml/include/ggml-cpu.h     ${header_path}
     cp ggml/include/ggml-blas.h    ${header_path}
     cp ggml/include/gguf.h         ${header_path}
+    # goleta-infer: expose ggml-mlx.h to Swift consumers (MLXKernels.swift
+    # uses goleta_mlx_register_kernels at module-load time).
+    cp ggml/include/ggml-mlx.h     ${header_path}
 
     # Create module map (common for all platforms)
     cat > ${module_path}module.modulemap << EOF
@@ -133,6 +152,7 @@ framework module llama {
     header "ggml-metal.h"
     header "ggml-cpu.h"
     header "ggml-blas.h"
+    header "ggml-mlx.h"
     header "gguf.h"
 
     link "c++"
@@ -251,6 +271,12 @@ combine_static_libraries() {
         "${base_dir}/${build_dir}/ggml/src/ggml-metal/${release_dir}/libggml-metal.a"
         "${base_dir}/${build_dir}/ggml/src/ggml-blas/${release_dir}/libggml-blas.a"
     )
+    # goleta-infer: include the ggml-mlx Phase 1 stub backend in the
+    # combined archive when GGML_MLX=ON. Apple-only platforms.
+    local mlx_lib="${base_dir}/${build_dir}/ggml/src/ggml-mlx/${release_dir}/libggml-mlx.a"
+    if [ -f "$mlx_lib" ]; then
+        libs+=("$mlx_lib")
+    fi
 
     # Create temporary directory for processing
     local temp_dir="${base_dir}/${build_dir}/temp"
@@ -401,6 +427,7 @@ combine_static_libraries() {
     rm -rf "${temp_dir}"
 }
 
+if [ "$MACOS_ONLY" = "0" ]; then
 echo "Building for iOS simulator..."
 cmake -B build-ios-sim -G Xcode \
     "${COMMON_CMAKE_ARGS[@]}" \
@@ -415,7 +442,9 @@ cmake -B build-ios-sim -G Xcode \
     -DLLAMA_OPENSSL=OFF \
     -S .
 cmake --build build-ios-sim --config Release -- -quiet
+fi
 
+if [ "$MACOS_ONLY" = "0" ]; then
 echo "Building for iOS devices..."
 cmake -B build-ios-device -G Xcode \
     "${COMMON_CMAKE_ARGS[@]}" \
@@ -429,18 +458,26 @@ cmake -B build-ios-device -G Xcode \
     -DLLAMA_OPENSSL=OFF \
     -S .
 cmake --build build-ios-device --config Release -- -quiet
+fi
 
 echo "Building for macOS..."
+# goleta-infer: macOS-only build pins arm64 (Apple Silicon target).
+if [ "$MACOS_ONLY" = "1" ]; then
+    MACOS_ARCHES="arm64"
+else
+    MACOS_ARCHES="arm64;x86_64"
+fi
 cmake -B build-macos -G Xcode \
     "${COMMON_CMAKE_ARGS[@]}" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOS_MIN_OS_VERSION} \
-    -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+    -DCMAKE_OSX_ARCHITECTURES="${MACOS_ARCHES}" \
     -DCMAKE_C_FLAGS="${COMMON_C_FLAGS}" \
     -DCMAKE_CXX_FLAGS="${COMMON_CXX_FLAGS}" \
     -DLLAMA_OPENSSL=OFF \
     -S .
 cmake --build build-macos --config Release -- -quiet
 
+if [ "$MACOS_ONLY" = "0" ]; then
 echo "Building for visionOS..."
 cmake -B build-visionos -G Xcode \
     "${COMMON_CMAKE_ARGS[@]}" \
@@ -486,7 +523,9 @@ cmake -B build-tvos-sim -G Xcode \
     -DLLAMA_OPENSSL=OFF \
     -S .
 cmake --build build-tvos-sim --config Release -- -quiet
+fi  # MACOS_ONLY guard for visionOS/tvOS-sim
 
+if [ "$MACOS_ONLY" = "0" ]; then
 echo "Building for tvOS devices..."
 cmake -B build-tvos-device -G Xcode \
     "${COMMON_CMAKE_ARGS[@]}" \
@@ -501,42 +540,70 @@ cmake -B build-tvos-device -G Xcode \
     -DLLAMA_OPENSSL=OFF \
     -S .
 cmake --build build-tvos-device --config Release -- -quiet
+fi
 
 # Setup frameworks and copy binaries and headers
 echo "Setting up framework structures..."
-setup_framework_structure "build-ios-sim" ${IOS_MIN_OS_VERSION} "ios"
-setup_framework_structure "build-ios-device" ${IOS_MIN_OS_VERSION} "ios"
+if [ "$MACOS_ONLY" = "0" ]; then
+    setup_framework_structure "build-ios-sim" ${IOS_MIN_OS_VERSION} "ios"
+    setup_framework_structure "build-ios-device" ${IOS_MIN_OS_VERSION} "ios"
+fi
 setup_framework_structure "build-macos" ${MACOS_MIN_OS_VERSION} "macos"
-setup_framework_structure "build-visionos" ${VISIONOS_MIN_OS_VERSION} "visionos"
-setup_framework_structure "build-visionos-sim" ${VISIONOS_MIN_OS_VERSION} "visionos"
-setup_framework_structure "build-tvos-sim" ${TVOS_MIN_OS_VERSION} "tvos"
-setup_framework_structure "build-tvos-device" ${TVOS_MIN_OS_VERSION} "tvos"
+if [ "$MACOS_ONLY" = "0" ]; then
+    setup_framework_structure "build-visionos" ${VISIONOS_MIN_OS_VERSION} "visionos"
+    setup_framework_structure "build-visionos-sim" ${VISIONOS_MIN_OS_VERSION} "visionos"
+    setup_framework_structure "build-tvos-sim" ${TVOS_MIN_OS_VERSION} "tvos"
+    setup_framework_structure "build-tvos-device" ${TVOS_MIN_OS_VERSION} "tvos"
+fi
 
 # Create dynamic libraries from static libraries
 echo "Creating dynamic libraries from static libraries..."
-combine_static_libraries "build-ios-sim" "Release-iphonesimulator" "ios" "true"
-combine_static_libraries "build-ios-device" "Release-iphoneos" "ios" "false"
+if [ "$MACOS_ONLY" = "0" ]; then
+    combine_static_libraries "build-ios-sim" "Release-iphonesimulator" "ios" "true"
+    combine_static_libraries "build-ios-device" "Release-iphoneos" "ios" "false"
+fi
 combine_static_libraries "build-macos" "Release" "macos" "false"
-combine_static_libraries "build-visionos" "Release-xros" "visionos" "false"
-combine_static_libraries "build-visionos-sim" "Release-xrsimulator" "visionos" "true"
-combine_static_libraries "build-tvos-sim" "Release-appletvsimulator" "tvos" "true"
-combine_static_libraries "build-tvos-device" "Release-appletvos" "tvos" "false"
+if [ "$MACOS_ONLY" = "0" ]; then
+    combine_static_libraries "build-visionos" "Release-xros" "visionos" "false"
+    combine_static_libraries "build-visionos-sim" "Release-xrsimulator" "visionos" "true"
+    combine_static_libraries "build-tvos-sim" "Release-appletvsimulator" "tvos" "true"
+    combine_static_libraries "build-tvos-device" "Release-appletvos" "tvos" "false"
+fi
 
-# Create XCFramework with correct debug symbols paths
+# Create XCFramework. Output renamed: llama.xcframework -> goleta-infer.xcframework
+# (Goleta consumers reference goleta-infer.xcframework via Package.swift binaryTarget.)
 echo "Creating XCFramework..."
-xcrun xcodebuild -create-xcframework \
-    -framework $(pwd)/build-ios-sim/framework/llama.framework \
-    -debug-symbols $(pwd)/build-ios-sim/dSYMs/llama.dSYM \
-    -framework $(pwd)/build-ios-device/framework/llama.framework \
-    -debug-symbols $(pwd)/build-ios-device/dSYMs/llama.dSYM \
-    -framework $(pwd)/build-macos/framework/llama.framework \
-    -debug-symbols $(pwd)/build-macos/dSYMs/llama.dSYM \
-    -framework $(pwd)/build-visionos/framework/llama.framework \
-    -debug-symbols $(pwd)/build-visionos/dSYMs/llama.dSYM \
-    -framework $(pwd)/build-visionos-sim/framework/llama.framework \
-    -debug-symbols $(pwd)/build-visionos-sim/dSYMs/llama.dSYM \
-    -framework $(pwd)/build-tvos-device/framework/llama.framework \
-    -debug-symbols $(pwd)/build-tvos-device/dSYMs/llama.dSYM \
-    -framework $(pwd)/build-tvos-sim/framework/llama.framework \
-    -debug-symbols $(pwd)/build-tvos-sim/dSYMs/llama.dSYM \
-    -output $(pwd)/build-apple/llama.xcframework
+mkdir -p build-apple
+XCFRAMEWORK_ARGS=(-create-xcframework)
+if [ "$MACOS_ONLY" = "0" ]; then
+    XCFRAMEWORK_ARGS+=(
+        -framework "$(pwd)/build-ios-sim/framework/llama.framework"
+        -debug-symbols "$(pwd)/build-ios-sim/dSYMs/llama.dSYM"
+        -framework "$(pwd)/build-ios-device/framework/llama.framework"
+        -debug-symbols "$(pwd)/build-ios-device/dSYMs/llama.dSYM"
+    )
+fi
+XCFRAMEWORK_ARGS+=(
+    -framework "$(pwd)/build-macos/framework/llama.framework"
+    -debug-symbols "$(pwd)/build-macos/dSYMs/llama.dSYM"
+)
+if [ "$MACOS_ONLY" = "0" ]; then
+    XCFRAMEWORK_ARGS+=(
+        -framework "$(pwd)/build-visionos/framework/llama.framework"
+        -debug-symbols "$(pwd)/build-visionos/dSYMs/llama.dSYM"
+        -framework "$(pwd)/build-visionos-sim/framework/llama.framework"
+        -debug-symbols "$(pwd)/build-visionos-sim/dSYMs/llama.dSYM"
+        -framework "$(pwd)/build-tvos-device/framework/llama.framework"
+        -debug-symbols "$(pwd)/build-tvos-device/dSYMs/llama.dSYM"
+        -framework "$(pwd)/build-tvos-sim/framework/llama.framework"
+        -debug-symbols "$(pwd)/build-tvos-sim/dSYMs/llama.dSYM"
+    )
+fi
+XCFRAMEWORK_ARGS+=(-output "$(pwd)/build-apple/goleta-infer.xcframework")
+xcrun xcodebuild "${XCFRAMEWORK_ARGS[@]}"
+
+echo
+echo "=== goleta-infer.xcframework built at $(pwd)/build-apple/goleta-infer.xcframework ==="
+du -sh build-apple/goleta-infer.xcframework
+echo "Slices:"
+ls build-apple/goleta-infer.xcframework | grep -v Info.plist
