@@ -5,3 +5,5 @@
 ggml-common.h
 **/*.swp
 !peg-parser
+# goleta-infer: manual smoke tests (model load + decode verification)
+!manual/

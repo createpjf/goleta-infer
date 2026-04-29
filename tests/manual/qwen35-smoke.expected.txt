@@ -1,0 +1,53 @@
+
+Loading model... |-\|/-\|/-\ 
+
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b8974-fdf36005f
+model      : Qwen3.5-9B-Q4_K_M.gguf
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+> What is 2 plus 2? Answer with just the number, no explanation.
+
+| [Start thinking]
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Question: "What is 2 plus 2?"
+    *   Constraint: "Answer with just the number, no explanation."
+
+2.  **Calculate the Answer:**
+    *   2 + 2 = 4
+
+3.  **Format the Output:**
+    *   Must be just the number.
+    *   No text, no punctuation (unless part of the number, but usually just the digit).
+    *   So, "4".
+
+4.  **Final Check:**
+    *   Does it meet the constraint? Yes.
+    *   Is it correct? Yes.
+
+5.  **Construct Output:** 4
+[End thinking]
+
+4
+
+[ Prompt: 267.0 t/s | Generation: 47.3 t/s ]
+
+Exiting...
