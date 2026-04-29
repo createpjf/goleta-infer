@@ -100,3 +100,6 @@ tests/test-tokenizer-1-llama
 tests/test-tokenizer-1-bpe
 
 build-info.h
+mlx-spike/.build/
+mlx-spike/.xcbuild/
+mlx-spike/Package.resolved
