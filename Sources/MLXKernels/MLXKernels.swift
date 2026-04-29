@@ -84,6 +84,10 @@ public enum MLXKernels {
         // ggml-mlx.cpp's graph_compute actually dispatches to.
         table.mul_mat_f16_ggml = _mulMatF16GgmlBridge
 
+        // Task 2.2: Q4_K_M -> fp16 dequantization. Used by the mul_mat
+        // path when src0 is Q4_K_M (Qwen 3.5 9B's storage format).
+        table.dequant_q4km_to_f16 = _dequantQ4KMtoF16Bridge
+
         // Phase 2 remaining slots default-initialize to nil. As tasks 2.2-2.6
         // land, they add their @_cdecl symbol here. ggml-mlx checks for NULL
         // per-op before dispatching; absent kernels fall through to ggml-cpu.

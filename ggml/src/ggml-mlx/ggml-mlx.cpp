@@ -115,6 +115,14 @@ struct ggml_backend_mlx_context {
     int placeholder = 0;
 };
 
+// Q4_K_M block size in elements — must match QK_K in ggml-common.h.
+// Replicated here as a literal so we don't pull internal headers into the
+// public ggml-mlx.cpp.
+namespace {
+    constexpr int64_t kQ4KMBlockElements = 256;
+    constexpr size_t  kQ4KMBlockBytes    = 144;
+}
+
 static bool ggml_backend_mlx_can_run_mul_mat(const struct ggml_tensor * op) {
     const auto * src0 = op->src[0];
     const auto * src1 = op->src[1];
@@ -122,9 +130,25 @@ static bool ggml_backend_mlx_can_run_mul_mat(const struct ggml_tensor * op) {
         return false;
     }
 
-    // Kernel coverage: fp16-only matmul in Phase 2.1b.
-    // Phase 2.2 will extend this to Q4_K_M (dequant on the fly).
-    if (src0->type != GGML_TYPE_F16 || src1->type != GGML_TYPE_F16) {
+    // Kernel coverage:
+    //   - src0 (weight): fp16 OR Q4_K_M (Qwen 3.5 9B's storage format)
+    //   - src1 (input):  fp16 only (Q4_0 etc. quantized inputs not yet handled)
+    const bool src0_f16   = (src0->type == GGML_TYPE_F16);
+    const bool src0_q4_k  = (src0->type == GGML_TYPE_Q4_K);
+    if (!src0_f16 && !src0_q4_k) {
+        return false;
+    }
+    if (src1->type != GGML_TYPE_F16) {
+        return false;
+    }
+
+    // Q4_K_M only claimable if both kernel slots are populated. fp16 path
+    // only needs mul_mat_f16_ggml.
+    const auto * kernels = g_mlx_kernels.load(std::memory_order_acquire);
+    if (kernels == nullptr || kernels->mul_mat_f16_ggml == nullptr) {
+        return false;
+    }
+    if (src0_q4_k && kernels->dequant_q4km_to_f16 == nullptr) {
         return false;
     }
 
@@ -137,6 +161,12 @@ static bool ggml_backend_mlx_can_run_mul_mat(const struct ggml_tensor * op) {
     }
     if (src0->ne[2] != 1 || src0->ne[3] != 1 || src1->ne[2] != 1 || src1->ne[3] != 1) {
         // 4D / batched matmul not yet supported; needs broadcasting logic.
+        return false;
+    }
+
+    // For Q4_K_M, K must be a multiple of QK_K=256 (block size). Always
+    // true for ggml's Q4_K_M tensors but defensive.
+    if (src0_q4_k && (src0->ne[0] % kQ4KMBlockElements != 0)) {
         return false;
     }
 
@@ -170,12 +200,55 @@ static void ggml_backend_mlx_mul_mat(const struct ggml_tensor * dst,
     // bump this to int64 once we hit a real model with > 2B elements).
     GGML_ASSERT(M <= INT32_MAX && N <= INT32_MAX && K <= INT32_MAX);
 
-    const bool ok = kernels->mul_mat_f16_ggml(
-        src1->data, (int32_t)M, (int32_t)K,
-        src0->data, (int32_t)N, (int32_t)K,
-        dst->data
-    );
-    GGML_ASSERT(ok && "mul_mat_f16_ggml kernel returned false on a shape we claimed to support");
+    // Path A: src0 is fp16 — pass through to MLX matmul directly.
+    if (src0->type == GGML_TYPE_F16) {
+        const bool ok = kernels->mul_mat_f16_ggml(
+            src1->data, (int32_t)M, (int32_t)K,
+            src0->data, (int32_t)N, (int32_t)K,
+            dst->data
+        );
+        GGML_ASSERT(ok && "mul_mat_f16_ggml kernel returned false on a shape we claimed to support");
+        return;
+    }
+
+    // Path B: src0 is Q4_K_M — dequant on the fly into a transient fp16
+    // buffer, then matmul. Phase 2.7 will optimize this with a buffer pool;
+    // for Phase 2.2's first pass we malloc/free per matmul.
+    if (src0->type == GGML_TYPE_Q4_K) {
+        GGML_ASSERT(K % kQ4KMBlockElements == 0);
+        const int64_t blockCount = (N * K) / kQ4KMBlockElements;
+        const size_t  weightF16Bytes = (size_t)(N * K) * sizeof(uint16_t);  // fp16
+
+        // Allocate fp16 weight buffer. Largest weight in Qwen 3.5 9B is
+        // ~12k×4k = ~50M elements = ~100MB. Allocation is per-call here;
+        // the perf gate may push this into a pool (Task 2.7).
+        void * weightF16 = std::malloc(weightF16Bytes);
+        if (weightF16 == nullptr) {
+            GGML_ABORT("ggml-mlx: failed to allocate %zu bytes for Q4_K_M dequant scratch",
+                       weightF16Bytes);
+        }
+
+        const bool dequantOk = kernels->dequant_q4km_to_f16(
+            src0->data, (int32_t)blockCount, weightF16
+        );
+        if (!dequantOk) {
+            std::free(weightF16);
+            GGML_ABORT("ggml-mlx: dequant_q4km_to_f16 returned false");
+        }
+
+        const bool matmulOk = kernels->mul_mat_f16_ggml(
+            src1->data, (int32_t)M, (int32_t)K,
+            weightF16,  (int32_t)N, (int32_t)K,
+            dst->data
+        );
+        std::free(weightF16);
+        GGML_ASSERT(matmulOk && "mul_mat_f16_ggml returned false on Q4_K_M-dequant'd shape");
+        return;
+    }
+
+    GGML_ABORT("ggml-mlx: mul_mat dispatched on unexpected src0 type %s "
+               "(supports_op should have rejected it)",
+               ggml_type_name(src0->type));
 }
 
 // ---------------------------------------------------------------------------
