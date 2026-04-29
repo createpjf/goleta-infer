@@ -157,3 +157,8 @@ a.out.*
 
 AGENTS.local.md
 .pi/SYSTEM.md
+
+# Phase 0 spike harness build artifacts
+mlx-spike/.build/
+mlx-spike/.xcbuild/
+mlx-spike/Package.resolved
