@@ -93,6 +93,11 @@ option(LLAMA_HIPBLAS                         "llama: use hipBLAS"               
 option(LLAMA_CLBLAST                         "llama: use CLBlast"                               OFF)
 option(LLAMA_METAL                           "llama: use Metal"                                 ${LLAMA_METAL_DEFAULT})
 option(LLAMA_METAL_NDEBUG                    "llama: disable Metal debugging"                   OFF)
+# goleta-infer: MLX backend (Apple Silicon, sparse-aware kernels via Apple's
+# MLX framework). Stub today; Phase 0 spike measures viability before
+# real kernels land. Default OFF so upstream-compatible builds keep working
+# unchanged. Enable with: cmake -DLLAMA_MLX=ON ...
+option(LLAMA_MLX                             "goleta-infer: use Apple MLX backend (Phase 0 stub)" OFF)
 option(LLAMA_MPI                             "llama: use MPI"                                   OFF)
 option(LLAMA_QKK_64                          "llama: use super-block size of 64 for k-quants"   OFF)
 
@@ -169,6 +174,25 @@ if (LLAMA_METAL)
         ${METALKIT_FRAMEWORK}
         )
 endif()
+
+if (LLAMA_MLX)
+    # goleta-infer Phase 0 stub. Real MLX kernel implementation lands
+    # in MLXKernels.swift via the SwiftPM target — this CMake option
+    # only wires the C-side ggml-mlx backend declarations so the
+    # backend dispatch table can pick MLX when at runtime.
+    #
+    # MLX runtime lives in the consumer (Goleta.app via SwiftPM).
+    # ggml-mlx.c here just declares the cross-language interface
+    # functions that MLXKernels.swift implements via @_cdecl.
+    if (NOT APPLE)
+        message(FATAL_ERROR "LLAMA_MLX=ON only supported on Apple platforms")
+    endif()
+    message(STATUS "MLX backend: stub enabled (Phase 0 — kernels live in SwiftPM target)")
+    set(GGML_HEADERS_MLX ggml-mlx.h)
+    set(GGML_SOURCES_MLX ggml-mlx.c)
+    add_compile_definitions(GGML_USE_MLX)
+endif()
+
 if (LLAMA_BLAS)
     if (LLAMA_STATIC)
         set(BLA_STATIC ON)
@@ -654,6 +678,7 @@ add_library(ggml OBJECT
             ${GGML_SOURCES_CUDA} ${GGML_HEADERS_CUDA}
             ${GGML_SOURCES_OPENCL} ${GGML_HEADERS_OPENCL}
             ${GGML_SOURCES_METAL} ${GGML_HEADERS_METAL}
+            ${GGML_SOURCES_MLX} ${GGML_HEADERS_MLX}
             ${GGML_SOURCES_MPI} ${GGML_HEADERS_MPI}
             ${GGML_SOURCES_EXTRA} ${GGML_HEADERS_EXTRA}
             )
