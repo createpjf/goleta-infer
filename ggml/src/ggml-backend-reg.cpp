@@ -38,6 +38,10 @@
 #include "ggml-metal.h"
 #endif
 
+#ifdef GGML_USE_MLX
+#include "ggml-mlx.h"
+#endif
+
 #ifdef GGML_USE_SYCL
 #include "ggml-sycl.h"
 #endif
@@ -118,6 +122,9 @@ struct ggml_backend_registry {
 #endif
 #ifdef GGML_USE_METAL
         register_backend(ggml_backend_metal_reg());
+#endif
+#ifdef GGML_USE_MLX
+        register_backend(ggml_backend_mlx_reg());
 #endif
 #ifdef GGML_USE_SYCL
         register_backend(ggml_backend_sycl_reg());
