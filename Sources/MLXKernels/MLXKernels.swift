@@ -97,6 +97,14 @@ public enum MLXKernels {
         // Task 2.5: SDPA wrapper around MLXFast.scaledDotProductAttention.
         table.sdpa = _sdpaF16Bridge
 
+        // Task 2.6: KV cache. Opaque Swift handle (Unmanaged) round-tripped
+        // through a void* in the kernel table. create returns +1-retained
+        // pointer; destroy releases it. append/read use takeUnretained.
+        table.kv_cache_create  = _kvCacheCreateBridge
+        table.kv_cache_append  = _kvCacheAppendBridge
+        table.kv_cache_read    = _kvCacheReadBridge
+        table.kv_cache_destroy = _kvCacheDestroyBridge
+
         // Phase 2 remaining slots default-initialize to nil. As tasks 2.2-2.6
         // land, they add their @_cdecl symbol here. ggml-mlx checks for NULL
         // per-op before dispatching; absent kernels fall through to ggml-cpu.
