@@ -88,6 +88,15 @@ public enum MLXKernels {
         // path when src0 is Q4_K_M (Qwen 3.5 9B's storage format).
         table.dequant_q4km_to_f16 = _dequantQ4KMtoF16Bridge
 
+        // Task 2.3: RMSNorm wrapper around MLXFast.rmsNorm.
+        table.rms_norm = _rmsNormF16Bridge
+
+        // Task 2.4: RoPE wrapper around MLXFast.RoPE.
+        table.rope = _ropeF16Bridge
+
+        // Task 2.5: SDPA wrapper around MLXFast.scaledDotProductAttention.
+        table.sdpa = _sdpaF16Bridge
+
         // Phase 2 remaining slots default-initialize to nil. As tasks 2.2-2.6
         // land, they add their @_cdecl symbol here. ggml-mlx checks for NULL
         // per-op before dispatching; absent kernels fall through to ggml-cpu.
