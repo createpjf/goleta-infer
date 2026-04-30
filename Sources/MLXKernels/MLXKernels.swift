@@ -66,6 +66,34 @@ public enum MLXKernels {
         return goleta_mlx_kernels_available()
     }
 
+    /// Snapshot of how many ops the dispatcher routed through MLX vs
+    /// rejected (Phase 2.7 observability). Used by tests + by Phase 3
+    /// PowerInferProvider's debug surface.
+    public struct DispatchStats: Equatable {
+        public let mulMatF16Dispatched:       UInt64
+        public let mulMatQ4KMDispatched:      UInt64
+        public let mulMatRejectedBelowN:      UInt64
+        public let mulMatRejectedUnsupported: UInt64
+
+        public var totalDispatched: UInt64 { mulMatF16Dispatched + mulMatQ4KMDispatched }
+        public var totalRejected:   UInt64 { mulMatRejectedBelowN + mulMatRejectedUnsupported }
+    }
+
+    public static var dispatchStats: DispatchStats {
+        var raw = goleta_mlx_dispatch_stats()
+        goleta_mlx_get_dispatch_stats(&raw)
+        return DispatchStats(
+            mulMatF16Dispatched:       raw.mul_mat_f16_dispatched,
+            mulMatQ4KMDispatched:      raw.mul_mat_q4km_dispatched,
+            mulMatRejectedBelowN:      raw.mul_mat_rejected_below_n,
+            mulMatRejectedUnsupported: raw.mul_mat_rejected_unsupported
+        )
+    }
+
+    public static func resetDispatchStats() {
+        goleta_mlx_reset_dispatch_stats()
+    }
+
     // MARK: - Internal: table construction
 
     /// Build the kernel table from the @_cdecl symbols defined in this

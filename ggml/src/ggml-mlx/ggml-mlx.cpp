@@ -88,6 +88,35 @@ extern "C" bool goleta_mlx_kernels_available(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Dispatch observability (Phase 2.7)
+// ---------------------------------------------------------------------------
+
+namespace {
+    struct MlxStats {
+        std::atomic<uint64_t> mul_mat_f16{0};
+        std::atomic<uint64_t> mul_mat_q4km{0};
+        std::atomic<uint64_t> mul_mat_rejected_below_n{0};
+        std::atomic<uint64_t> mul_mat_rejected_unsupported{0};
+    };
+    MlxStats g_mlx_stats;
+}
+
+extern "C" void goleta_mlx_get_dispatch_stats(struct goleta_mlx_dispatch_stats * out) {
+    if (out == nullptr) return;
+    out->mul_mat_f16_dispatched       = g_mlx_stats.mul_mat_f16.load(std::memory_order_relaxed);
+    out->mul_mat_q4km_dispatched      = g_mlx_stats.mul_mat_q4km.load(std::memory_order_relaxed);
+    out->mul_mat_rejected_below_n     = g_mlx_stats.mul_mat_rejected_below_n.load(std::memory_order_relaxed);
+    out->mul_mat_rejected_unsupported = g_mlx_stats.mul_mat_rejected_unsupported.load(std::memory_order_relaxed);
+}
+
+extern "C" void goleta_mlx_reset_dispatch_stats(void) {
+    g_mlx_stats.mul_mat_f16.store(0, std::memory_order_relaxed);
+    g_mlx_stats.mul_mat_q4km.store(0, std::memory_order_relaxed);
+    g_mlx_stats.mul_mat_rejected_below_n.store(0, std::memory_order_relaxed);
+    g_mlx_stats.mul_mat_rejected_unsupported.store(0, std::memory_order_relaxed);
+}
+
+// ---------------------------------------------------------------------------
 // Backend implementation (Phase 2 Task 2.1b)
 //
 // Models on ggml-blas: a host-memory "boost" backend that intercepts a
@@ -136,9 +165,11 @@ static bool ggml_backend_mlx_can_run_mul_mat(const struct ggml_tensor * op) {
     const bool src0_f16   = (src0->type == GGML_TYPE_F16);
     const bool src0_q4_k  = (src0->type == GGML_TYPE_Q4_K);
     if (!src0_f16 && !src0_q4_k) {
+        g_mlx_stats.mul_mat_rejected_unsupported.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     if (src1->type != GGML_TYPE_F16) {
+        g_mlx_stats.mul_mat_rejected_unsupported.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
 
@@ -174,6 +205,7 @@ static bool ggml_backend_mlx_can_run_mul_mat(const struct ggml_tensor * op) {
     // src0 layout in ggml is [K, N] so N == ne01.
     const int64_t N = src0->ne[1];
     if (N < kMlxMulMatMinN) {
+        g_mlx_stats.mul_mat_rejected_below_n.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
 
@@ -208,6 +240,7 @@ static void ggml_backend_mlx_mul_mat(const struct ggml_tensor * dst,
             dst->data
         );
         GGML_ASSERT(ok && "mul_mat_f16_ggml kernel returned false on a shape we claimed to support");
+        g_mlx_stats.mul_mat_f16.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -243,6 +276,7 @@ static void ggml_backend_mlx_mul_mat(const struct ggml_tensor * dst,
         );
         std::free(weightF16);
         GGML_ASSERT(matmulOk && "mul_mat_f16_ggml returned false on Q4_K_M-dequant'd shape");
+        g_mlx_stats.mul_mat_q4km.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 

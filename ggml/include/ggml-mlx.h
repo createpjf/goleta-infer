@@ -121,6 +121,27 @@ GGML_BACKEND_API bool goleta_mlx_register_kernels(const struct goleta_mlx_kernel
 // ggml_backend_mlx_init() to decide stub vs real.
 GGML_BACKEND_API bool goleta_mlx_kernels_available(void);
 
+// ---------------------------------------------------------------------------
+// Phase 2.7 dispatcher observability
+//
+// Counters incremented by graph_compute as it dispatches ops. Exposed for
+// tests and for Phase 2.9 perf reporting (so we can confirm "MLX claimed N
+// matmuls during this run" matches expectation).
+// ---------------------------------------------------------------------------
+
+struct goleta_mlx_dispatch_stats {
+    uint64_t mul_mat_f16_dispatched;       // src0 fp16, taken via mul_mat_f16_ggml
+    uint64_t mul_mat_q4km_dispatched;      // src0 Q4_K_M, dequant + matmul
+    uint64_t mul_mat_rejected_below_n;     // supports_op said no because N < kMlxMulMatMinN
+    uint64_t mul_mat_rejected_unsupported; // dtype / shape didn't fit; fell through to ggml-cpu
+};
+
+// Snapshot the current counter values. Atomic read; safe from any thread.
+GGML_BACKEND_API void goleta_mlx_get_dispatch_stats(struct goleta_mlx_dispatch_stats * out);
+
+// Zero all counters. Tests call this between cases for isolation.
+GGML_BACKEND_API void goleta_mlx_reset_dispatch_stats(void);
+
 #ifdef __cplusplus
 }
 #endif
